@@ -48,6 +48,9 @@ const createTransporter = () => {
     }
 
     // Custom SMTP — provider sets EMAIL_HOST, EMAIL_PORT themselves
+    // Keep TLS certificate verification on by default. Disabling it via
+    // EMAIL_TLS_REJECT_UNAUTHORIZED=false is only meant for local dev
+    // against a self-signed test server.
     return nodemailer.createTransport({
         host: process.env.EMAIL_HOST,
         port: parseInt(process.env.EMAIL_PORT, 10) || 587,
@@ -59,7 +62,7 @@ const createTransporter = () => {
             pass: process.env.EMAIL_PASS,
         },
         tls: {
-            rejectUnauthorized: false,
+            rejectUnauthorized: process.env.EMAIL_TLS_REJECT_UNAUTHORIZED !== "false",
         },
     });
 };
