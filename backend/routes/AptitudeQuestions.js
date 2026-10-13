@@ -1,23 +1,36 @@
 const express = require("express");
 const { generateWithFallback } = require("../utils/geminiHelper");
 const NodeCache = require("node-cache");
+const { protect } = require("../middlewares/authMiddleware");
+const { aiLimiter, aiUserLimiter } = require("../middlewares/rateLimiter");
 
 const questionCache = new NodeCache({
   stdTTL: 3600,
+  maxKeys: 500,
 });
 
 const router = express.Router();
 const MAX_RETRIES = 3;
 const INITIAL_DELAY = 1000;
+const MAX_TOPIC_LENGTH = 100;
 
 
 // GET /api/questions?topic=Probability
-router.get("/", async (req, res) => {
+router.get("/", protect, aiLimiter, aiUserLimiter, async (req, res) => {
   const { topic } = req.query;
   if (typeof topic !== "string" || topic.trim().length === 0) {
     return res.status(400).json({ error: "Topic is required" });
   }
-  const normalizedTopic = topic.trim().toLowerCase();
+  const cleanedTopic = topic.trim();
+  if (cleanedTopic.length > MAX_TOPIC_LENGTH) {
+    return res
+      .status(400)
+      .json({ error: "Topic must be 100 characters or fewer" });
+  }
+  if (/[<>\x00-\x1f\x7f]/.test(cleanedTopic)) {
+    return res.status(400).json({ error: "Topic contains invalid characters" });
+  }
+  const normalizedTopic = cleanedTopic.toLowerCase();
   const cacheKey = `questions:${normalizedTopic}`;
 
   const cachedQuestions = questionCache.get(cacheKey);
@@ -27,7 +40,7 @@ router.get("/", async (req, res) => {
   }
 
   const prompt = `
-    Generate 5 multiple-choice aptitude questions on the topic: ${topic}.
+    Generate 5 multiple-choice aptitude questions on the topic: ${cleanedTopic}.
     Each question should have 4 options and indicate the correct answer in JSON format like:
     [
       {
