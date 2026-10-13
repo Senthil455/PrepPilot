@@ -462,24 +462,66 @@ const updateUserProfile = async (req, res) => {
         }
 
         // Update fields if they are sent in request
-       // Update fields if they are sent in request
-        if (firstName !== undefined) user.firstName = firstName;
-        if (lastName !== undefined) user.lastName = lastName;
-        if (bio !== undefined) user.bio = bio;
+        const asTrimmedString = (value, maxLen) => {
+            if (typeof value !== "string") return { ok: false };
+            const trimmed = value.trim();
+            if (trimmed.length > maxLen) return { ok: false, tooLong: true };
+            return { ok: true, value: trimmed };
+        };
+
+        if (firstName !== undefined) {
+            const parsed = asTrimmedString(firstName, 50);
+            if (!parsed.ok) {
+                return res.status(400).json({ success: false, message: "First name must be a string up to 50 characters." });
+            }
+            user.firstName = parsed.value;
+        }
+        if (lastName !== undefined) {
+            const parsed = asTrimmedString(lastName, 50);
+            if (!parsed.ok) {
+                return res.status(400).json({ success: false, message: "Last name must be a string up to 50 characters." });
+            }
+            user.lastName = parsed.value;
+        }
+        if (bio !== undefined) {
+            const parsed = asTrimmedString(bio, 500);
+            if (!parsed.ok) {
+                return res.status(400).json({ success: false, message: "Bio must be a string up to 500 characters." });
+            }
+            user.bio = parsed.value;
+        }
 
         if (country !== undefined) {
-            if (country.trim() !== "" && !isValidCountry(country)) {
+            const parsed = asTrimmedString(country, 100);
+            if (!parsed.ok) {
+                return res.status(400).json({ success: false, message: "Country must be a string up to 100 characters." });
+            }
+            if (parsed.value !== "" && !isValidCountry(parsed.value)) {
                 return res.status(400).json({
                     success: false,
                     message: "Please enter a valid country name.",
                 });
             }
 
-            user.country = country.trim();
+            user.country = parsed.value;
         }
 
-        if (profileImageUrl !== undefined) user.profileImageUrl = profileImageUrl;
-        if (visibility !== undefined) user.visibility = visibility;
+        if (profileImageUrl !== undefined) {
+            if (typeof profileImageUrl !== "string" || profileImageUrl.trim().length > 500) {
+                return res.status(400).json({ success: false, message: "Profile image url must be a string up to 500 characters." });
+            }
+            const trimmedUrl = profileImageUrl.trim();
+            if (trimmedUrl !== "" && !/^https?:\/\/\S+\.\S+/.test(trimmedUrl)) {
+                return res.status(400).json({ success: false, message: "Profile image url must be a valid http(s) url." });
+            }
+            user.profileImageUrl = trimmedUrl;
+        }
+        if (visibility !== undefined) {
+            if (visibility !== "Public" && visibility !== "Private") {
+                return res.status(400).json({ success: false, message: "Visibility must be Public or Private." });
+            }
+            user.visibility = visibility;
+        }
         // Sync name based on firstName and lastName
         if (firstName !== undefined || lastName !== undefined) {
             const fName = firstName !== undefined ? firstName : user.firstName;
@@ -489,12 +531,19 @@ const updateUserProfile = async (req, res) => {
 
         // Handle PrepPilot ID uniqueness check if changed
         if (prepPilotId !== undefined && prepPilotId !== user.prepPilotId) {
-            if (prepPilotId.trim() !== "") {
-                const existingUser = await User.findOne({ prepPilotId: prepPilotId.trim() });
+            if (typeof prepPilotId !== "string") {
+                return res.status(400).json({ success: false, message: "PrepPilot ID must be a string." });
+            }
+            const trimmedId = prepPilotId.trim();
+            if (trimmedId.length > 30) {
+                return res.status(400).json({ success: false, message: "PrepPilot ID must be 30 characters or fewer." });
+            }
+            if (trimmedId !== "") {
+                const existingUser = await User.findOne({ prepPilotId: trimmedId });
                 if (existingUser && existingUser._id.toString() !== userId.toString()) {
                     return res.status(400).json({ success: false, message: "PrepPilot ID is already taken" });
                 }
-                user.prepPilotId = prepPilotId.trim();
+                user.prepPilotId = trimmedId;
             } else {
                 user.prepPilotId = undefined; // sparse allow null
             }
