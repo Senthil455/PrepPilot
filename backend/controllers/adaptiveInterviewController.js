@@ -2,6 +2,56 @@ const AdaptiveInterviewSession = require("../models/AdaptiveInterviewSession");
 const { generateWithFallback } = require("../utils/geminiHelper");
 
 // Helper to generate a question using Gemini
+function parseModelJson(rawText) {
+  const cleanedText = (rawText || "")
+    .replace(/^[\s`]*json\s*/i, "")
+    .replace(/^\s*```/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  try {
+    return JSON.parse(cleanedText);
+  } catch (err) {
+    const e = new Error("Model response was not valid JSON");
+    e.statusCode = 502;
+    throw e;
+  }
+}
+
+function isNonEmptyString(value, maxLen) {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value.trim().length <= maxLen
+  );
+}
+
+function validateStartPayload(body) {
+  const { role, experienceLevel, topics, maxQuestions = 5 } = body || {};
+  if (!isNonEmptyString(role, 200)) {
+    return "Role must be a string between 1 and 200 characters";
+  }
+  if (!isNonEmptyString(experienceLevel, 100)) {
+    return "Experience level must be a string between 1 and 100 characters";
+  }
+  if (!Array.isArray(topics) || topics.length === 0 || topics.length > 10) {
+    return "Topics must be an array with 1 to 10 entries";
+  }
+  for (const t of topics) {
+    if (!isNonEmptyString(t, 100)) {
+      return "Each topic must be a string between 1 and 100 characters";
+    }
+  }
+  if (
+    typeof maxQuestions !== "number" ||
+    !Number.isInteger(maxQuestions) ||
+    maxQuestions < 1 ||
+    maxQuestions > 20
+  ) {
+    return "maxQuestions must be an integer between 1 and 20";
+  }
+  return null;
+}
+
 async function generateQuestion(role, experienceLevel, topics, currentDifficulty, previousQuestions = []) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is missing");
@@ -27,9 +77,19 @@ Do not include markdown blocks, just the raw JSON.`;
   });
 
   const rawText = await result.response.text();
-  const cleanedText = rawText.replace(/^[\s`]*json\s*/i, "").replace(/^\s*```/i, "").replace(/```$/i, "").trim();
-  
-  return JSON.parse(cleanedText);
+  const parsed = parseModelJson(rawText);
+  if (
+    !parsed ||
+    typeof parsed.questionText !== "string" ||
+    parsed.questionText.trim().length === 0 ||
+    typeof parsed.topic !== "string" ||
+    parsed.topic.trim().length === 0
+  ) {
+    const e = new Error("Model response was missing question fields");
+    e.statusCode = 502;
+    throw e;
+  }
+  return parsed;
 }
 
 // Helper to evaluate an answer using Gemini
@@ -58,9 +118,21 @@ Do not include markdown blocks, just the raw JSON.`;
   });
 
   const rawText = await result.response.text();
-  const cleanedText = rawText.replace(/^[\s`]*json\s*/i, "").replace(/^\s*```/i, "").replace(/```$/i, "").trim();
-  
-  return JSON.parse(cleanedText);
+  const parsed = parseModelJson(rawText);
+  const scores = [
+    parsed.correctnessScore,
+    parsed.explanationScore,
+    parsed.overallScore,
+  ];
+  const scoresValid = scores.every(
+    (s) => typeof s === "number" && Number.isFinite(s) && s >= 0 && s <= 100
+  );
+  if (!parsed || !scoresValid) {
+    const e = new Error("Model response had invalid scores");
+    e.statusCode = 502;
+    throw e;
+  }
+  return parsed;
 }
 
 // Helper to determine next difficulty
@@ -80,11 +152,11 @@ function getNextDifficulty(currentDifficulty, score) {
 // 1. Start a new adaptive session
 exports.startSession = async (req, res) => {
   try {
-    const { role, experienceLevel, topics, maxQuestions = 5 } = req.body;
-    
-    if (!role || !experienceLevel || !topics || topics.length === 0) {
-      return res.status(400).json({ error: "Missing required fields: role, experienceLevel, topics" });
+    const validationError = validateStartPayload(req.body);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
     }
+    const { role, experienceLevel, topics, maxQuestions = 5 } = req.body;
 
     const session = new AdaptiveInterviewSession({
       user: req.user._id,
@@ -109,6 +181,11 @@ exports.startSession = async (req, res) => {
     res.status(201).json({ success: true, session });
   } catch (error) {
     console.error("[Adaptive] Start Session Error:", error);
+    if (error.statusCode === 502) {
+      return res
+        .status(502)
+        .json({ error: "The AI service returned an unreadable reply. Please try again." });
+    }
     res.status(500).json({ error: "Failed to start session" });
   }
 };
@@ -119,8 +196,13 @@ exports.submitAnswer = async (req, res) => {
     const { sessionId } = req.params;
     const { answer } = req.body;
 
-    if (!answer) {
+    if (typeof answer !== "string" || answer.trim().length === 0) {
       return res.status(400).json({ error: "Answer is required" });
+    }
+    if (answer.trim().length > 5000) {
+      return res
+        .status(400)
+        .json({ error: "Answer must be 5000 characters or fewer" });
     }
 
     const session = await AdaptiveInterviewSession.findOne({ _id: sessionId, user: req.user._id });
@@ -220,6 +302,11 @@ exports.submitAnswer = async (req, res) => {
     });
   } catch (error) {
     console.error("[Adaptive] Submit Answer Error:", error);
+    if (error.statusCode === 502) {
+      return res
+        .status(502)
+        .json({ error: "The AI service returned an unreadable reply. Please try again." });
+    }
     res.status(500).json({ error: "Failed to evaluate answer" });
   }
 };
