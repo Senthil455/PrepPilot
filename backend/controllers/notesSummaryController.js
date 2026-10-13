@@ -118,6 +118,12 @@ const summarizeNotes = async (req, res) => {
       sourceType = "upload";
     } else {
       sourceUrl = req.body.url;
+      if (typeof sourceUrl !== "string" || sourceUrl.trim().length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Please attach a PDF file or provide a valid url.",
+        });
+      }
       fileName = req.body.fileName || sourceUrl.split("/").pop() || "notes.pdf";
       sourceType = "platform";
       try {
@@ -146,7 +152,10 @@ const summarizeNotes = async (req, res) => {
     const base64Data = buffer.toString("base64");
     buffer = null; // Release Buffer memory
 
-    const existingSummary = await NotesSummary.findOne({ contentHash });
+    const existingSummary = await NotesSummary.findOne({
+      contentHash,
+      user: req.user._id,
+    });
     if (existingSummary) {
       return res.status(200).json({
         success: true,
